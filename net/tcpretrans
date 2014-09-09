@@ -167,6 +167,10 @@ sub map_tcp_states {
 sub inet_h2a {
 	my ($haddr) = @_;
 
+  # pad front with zeroes if necessary
+	$haddr = "00${haddr}" if length($haddr) == 6;
+	$haddr = "0${haddr}" if length($haddr) == 7;
+
 	my @addr = ();
 	for my $num ($haddr =~ /(..)(..)(..)(..)/) {
 		unshift @addr, hex($num);
@@ -193,10 +197,11 @@ writeto "$$", $flock or die "ERROR: unable to write $flock.";
 writeto "nop", "current_tracer" or ldie "ERROR: disabling current_tracer.";
 my $kname_rtr = "tcpretrans_tcp_retransmit_skb";
 my $kname_tlp = "tcpretrans_tcp_send_loss_probe";
-create_kprobe $kname_rtr, "tcp_retransmit_skb sk=%di" or
+my $probe_params = "sk=%di raddr=+0(%di):u32 laddr=+4(%di):u32 rport=+12(%di):u16 lport=+14(%di):u16 state=+18(%di):u8";
+create_kprobe $kname_rtr, "tcp_retransmit_skb $probe_params" or
     ldie "ERROR: creating kprobe for tcp_retransmit_skb().";;
 if ($tlp) {
-	create_kprobe $kname_tlp, "tcp_send_loss_probe sk=%di" or
+	create_kprobe $kname_tlp, "tcp_send_loss_probe $probe_params" or
 	    edie "ERROR: creating kprobe for tcp_send_loss_probe(). " .
 	         "Older kernel version?";
 }
@@ -252,7 +257,14 @@ while (1) {
 		$skp =~ s/^0x//;
 
 		my ($laddr, $lport, $raddr, $rport, $state);
-		if (defined $tcp{$skp}) {
+		if ($rest =~ /raddr=/) {
+			($raddr, $laddr, $rport, $lport, $state) = $rest =~ /raddr=0x([0-9a-f]+) laddr=0x([0-9a-f]+) rport=0x([0-9a-f]+) lport=0x([0-9a-f]+) state=0x([0-9a-f]+)/;
+			$raddr = inet_h2a($raddr);
+			$laddr = inet_h2a($laddr);
+			$lport = hex($lport);
+			$rport = unpack('S<', pack('S>', hex($rport)));
+			$state = $tcpstate[hex($state)];
+		} elsif (defined $tcp{$skp}) {
 			# convert /proc/net/tcp hex to dotted quads
 			my ($hladdr, $hlport) = split /:/, $tcp{$skp}{laddr};
 			my ($hraddr, $hrport) = split /:/, $tcp{$skp}{raddr};
